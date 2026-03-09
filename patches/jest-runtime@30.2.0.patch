@@ -1,0 +1,39 @@
+diff --git a/build/index.js b/build/index.js
+index 5fae9a1d2c39ba0c7cee6c220e086ddf8aa58d70..c00c979fc571e7a01e1c2af6d111b25c729ea374 100644
+--- a/build/index.js
++++ b/build/index.js
+@@ -572,7 +572,8 @@ class Runtime {
+       // @ts-expect-error -- exiting
+       return;
+     }
+-    if (this.isInsideTestCode === false) {
++    const supportsDynamicImport = esmIsAvailable;
++    if (this.isInsideTestCode === false && !supportsDynamicImport) {
+       throw new ReferenceError('You are trying to `import` a file outside of the scope of the test code.');
+     }
+     const registry = this._isolatedModuleRegistry ?? this._esmoduleRegistry;
+@@ -673,8 +674,12 @@ class Runtime {
+       process.exitCode = 1;
+       return;
+     }
+-    if (this.isInsideTestCode === false) {
+-      throw new ReferenceError('You are trying to `import` a file outside of the scope of the test code.');
++    const supportsDynamicImport = esmIsAvailable;
++
++    if (this.isInsideTestCode === false && !supportsDynamicImport) {
++      if (supportsDynamicImport) {
++        throw new ReferenceError('You are trying to `import` a file outside of the scope of the test code.');
++      }
+     }
+     if (module.status === 'unlinked') {
+       // since we might attempt to link the same module in parallel, stick the promise in a weak map so every call to
+@@ -1212,7 +1217,8 @@ class Runtime {
+       process.exitCode = 1;
+       return;
+     }
+-    if (this.isInsideTestCode === false) {
++    const supportsDynamicImport = esmIsAvailable;
++    if (this.isInsideTestCode === false && !supportsDynamicImport) {
+       throw new ReferenceError('You are trying to `import` a file outside of the scope of the test code.');
+     }
+ 

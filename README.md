@@ -1,50 +1,157 @@
-# Welcome to your Expo app 👋
+# Validation of ExpoSecureStore Race Condition Fix
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+## Goal
 
-## Get started
+Validate the PR that upgrades `@kinde/js-utils` in the `@kinde/expo` SDK
+and confirm whether it resolves the SecureStore race condition without
+breaking the Expo integration.
 
-1. Install dependencies
+------------------------------------------------------------------------
 
-   ```bash
-   npm install
-   ```
+# Testing Procedure
 
-2. Start the app
+## 1. Attempt to Replicate the Issue in a Real Expo App
 
-   ```bash
-   npx expo start
-   ```
+I first attempted to reproduce the race condition using a simple
+authentication flow in an Expo test application using the `@kinde/expo`
+SDK.
 
-In the output, you'll find options to open the app in a
+However, the issue was difficult to reproduce reliably because
+SecureStore writes complete very quickly in practice. As a result, the
+read operation usually happened after the write had already completed,
+making the race condition hard to trigger consistently.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+------------------------------------------------------------------------
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+# 2. Controlled Test Using a Mocked SecureStore
 
-## Get a fresh project
+To make the issue deterministic, I created a controlled test
+environment.
 
-When you're ready, run:
+Steps:
 
-```bash
-npm run reset-project
-```
+-   Mocked `expo-secure-store`
+-   Added an artificial delay inside `setItemAsync()` to simulate slow
+    persistence
+-   This reliably exposed the race condition scenario
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Because `ExpoSecureStore` is dynamically imported inside
+`@kinde/js-utils`, injecting a mock directly was difficult. To work
+around this, I mocked the **entire ExpoSecureStore export** from
+`@kinde/js-utils`.
 
-## Learn more
+Two versions were implemented:
 
-To learn more about developing your project with Expo, look at the following resources:
+-   **Buggy version** -- current implementation using
+    `forEach(async ...)`
+-   **Fixed version** -- proposed PR implementation using
+    `Promise.all(...)`
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+------------------------------------------------------------------------
 
-## Join the community
+# 3. Regression Tests
 
-Join our community of developers creating universal apps.
+Using these mocked implementations I created regression tests.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Results:
+
+### Buggy Implementation
+
+-   `setSessionItem()` resolves before async writes complete
+-   Immediate reads may return `null`
+
+### Fixed Implementation
+
+-   `setSessionItem()` waits for all writes to finish
+-   Immediate reads consistently return the stored value
+
+This confirmed both the presence of the race condition and the
+correctness of the proposed fix.
+
+------------------------------------------------------------------------
+
+# 4. Expo Render Test
+
+To simulate real application behavior:
+
+-   Created an Expo render test for an authentication page
+-   Used mocked secure store implementations
+
+Results:
+
+Buggy implementation → App renders **not authenticated**
+
+Fixed implementation → App renders **authenticated**
+
+This confirmed the practical impact of the race condition in the
+authentication workflow.
+
+------------------------------------------------------------------------
+
+# 5. Testing the Actual Dependency Upgrade
+
+Next, I validated the real dependency upgrade path.
+
+Steps:
+
+1.  Forked `@kinde/expo`
+2.  Updated its dependency to the newer `@kinde/js-utils`
+3.  Used the forked package inside the Expo test app
+
+Running the app produced the following error:
+
+`Failed to initialize storage: TypeError: Cannot read property 'ExpoSecureStore' of undefined`
+
+Tracing the issue revealed the following dynamic import:
+
+    const mod = await import(
+      /* webpackIgnore: true */ "./sessionManager/stores/expoSecureStore.js"
+    );
+
+Because `webpackIgnore: true` instructs the bundler to ignore this
+module, the file is not included in the build output, causing the
+runtime import to fail in the Expo environment.
+
+------------------------------------------------------------------------
+
+# 6. Further Investigation
+
+To confirm the root cause:
+
+1.  Forked the latest `@kinde/js-utils`
+2.  Removed `webpackIgnore: true`
+3.  Built the package locally
+4.  Used it as a dependency inside the forked `@kinde/expo`
+5.  Used that fork in the Expo test app
+
+After this change:
+
+-   The Expo app ran successfully
+-   Authentication flow worked correctly
+-   The race condition fix functioned as expected
+
+------------------------------------------------------------------------
+
+# Conclusion
+
+The race condition fix introduced in the updated `@kinde/js-utils`
+implementation is correct and resolves the async write issue.
+
+However, upgrading the dependency directly inside `@kinde/expo`
+currently breaks the package because the new implementation uses:
+
+`webpackIgnore: true`
+
+This prevents the `expoSecureStore` module from being bundled, which
+causes the dynamic import to fail in the Expo environment.
+
+------------------------------------------------------------------------
+
+# Final Assessment
+
+-   The race condition fix is valid.
+-   The dependency upgrade alone breaks the `@kinde/expo` package due to
+    the ignored dynamic import.
+-   The upgrade requires either removing `webpackIgnore: true` or
+    adjusting the bundling strategy so the ignored module is available
+    at runtime.
